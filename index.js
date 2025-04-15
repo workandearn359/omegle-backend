@@ -1,48 +1,67 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
+const cors = require('cors');
 
 const app = express();
+app.use(cors()); // To allow requests from frontend
+
 const server = http.createServer(app);
-const io = socketIo(server);
-
-let currentStranger = null; // Holds the current connected stranger
-
-// Handle new connections
-io.on('connection', (socket) => {
-    console.log('New client connected');
-
-    // Match with a stranger if one is available
-    if (currentStranger) {
-        // If there's an available stranger, connect the two clients
-        currentStranger.emit('stranger-connected');
-        socket.emit('stranger-connected');
-        currentStranger = null; // Reset stranger after matching
-    } else {
-        // If no stranger, wait for the next connection
-        currentStranger = socket;
-    }
-
-    // Listen for messages
-    socket.on('message', (message) => {
-        console.log('Received message:', message);
-        if (currentStranger) {
-            // Forward message to the other connected stranger
-            currentStranger.emit('message', message);
-        }
-    });
-
-    // Handle disconnection
-    socket.on('disconnect', () => {
-        console.log('Client disconnected');
-        if (currentStranger === socket) {
-            currentStranger = null; // Reset stranger if the matched client disconnects
-        }
-    });
+const io = socketIo(server, {
+  cors: {
+    origin: '*', // Allow any origin for now
+    methods: ['GET', 'POST']
+  }
 });
 
-// Start server
+let waitingUser = null; // Holds the user waiting for a match
+const pairs = new Map(); // Store socket.id pairs
+
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.id}`);
+
+  if (waitingUser) {
+    const partner = waitingUser;
+    pairs.set(socket.id, partner);
+    pairs.set(partner.id, socket);
+
+    socket.emit('stranger-connected');
+    partner.emit('stranger-connected');
+
+    waitingUser = null;
+  } else {
+    waitingUser = socket;
+  }
+
+  socket.on('message', (msg) => {
+    const partner = pairs.get(socket.id);
+    if (partner) {
+      partner.emit('message', msg);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
+
+    const partner = pairs.get(socket.id);
+    if (partner) {
+      partner.emit('message', 'Stranger disconnected');
+      pairs.delete(partner.id);
+    }
+
+    pairs.delete(socket.id);
+
+    if (waitingUser === socket) {
+      waitingUser = null;
+    }
+  });
+});
+
+app.get('/', (req, res) => {
+  res.send('Hello from backend');
+});
+
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
