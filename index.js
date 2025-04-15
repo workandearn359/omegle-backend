@@ -1,38 +1,48 @@
 const express = require('express');
-const cors = require('cors');
 const http = require('http');
-const { Server } = require('socket.io');
+const socketIo = require('socket.io');
 
 const app = express();
-app.use(cors());
+const server = http.createServer(app);
+const io = socketIo(server);
 
-app.get('/', (req, res) => {
-  res.send('Hello from backend');
-});
+let currentStranger = null; // Holds the current connected stranger
 
-const server = http.createServer(app); // Create HTTP server
-const io = new Server(server, {
-  cors: {
-    origin: '*', // Allow all origins for now
-    methods: ['GET', 'POST'],
-  },
-});
-
+// Handle new connections
 io.on('connection', (socket) => {
-  console.log('New user connected:', socket.id);
+    console.log('New client connected');
 
-  socket.on('message', (data) => {
-    console.log('Message received:', data);
-    // Broadcast the message to all other users
-    socket.broadcast.emit('message', data);
-  });
+    // Match with a stranger if one is available
+    if (currentStranger) {
+        // If there's an available stranger, connect the two clients
+        currentStranger.emit('stranger-connected');
+        socket.emit('stranger-connected');
+        currentStranger = null; // Reset stranger after matching
+    } else {
+        // If no stranger, wait for the next connection
+        currentStranger = socket;
+    }
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-  });
+    // Listen for messages
+    socket.on('message', (message) => {
+        console.log('Received message:', message);
+        if (currentStranger) {
+            // Forward message to the other connected stranger
+            currentStranger.emit('message', message);
+        }
+    });
+
+    // Handle disconnection
+    socket.on('disconnect', () => {
+        console.log('Client disconnected');
+        if (currentStranger === socket) {
+            currentStranger = null; // Reset stranger if the matched client disconnects
+        }
+    });
 });
 
-const PORT = process.env.PORT || 10000;
+// Start server
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
