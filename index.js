@@ -1,83 +1,64 @@
+// server.js (or index.js)
+
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
+const io = socketIo(server);
 
-let waitingUsers = [];
-let activePairs = new Map(); // key = socket.id, value = partner's socket
+let users = {};  // Using an object to track active users by socket id
 
-// Matchmaking function
-function pairUsers(socket1, socket2) {
-  activePairs.set(socket1.id, socket2);
-  activePairs.set(socket2.id, socket1);
-
-  socket1.emit('stranger-connected');
-  socket2.emit('stranger-connected');
-}
-
-// Disconnect both users in a pair
-function disconnectPair(socket) {
-  const partner = activePairs.get(socket.id);
-  if (partner) {
-    partner.emit('partner-disconnected');
-    activePairs.delete(partner.id);
-  }
-  activePairs.delete(socket.id);
-}
-
-// Handle new connections
+// Handling socket connections
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log('New user connected');
+  
+  // Add user to the list with socket id as key
+  users[socket.id] = null;  // Null means not connected to a stranger yet
 
-  // Try to pair user
-  if (waitingUsers.length > 0) {
-    const partner = waitingUsers.shift();
-    pairUsers(socket, partner);
-  } else {
-    waitingUsers.push(socket);
-  }
-
-  // Handle messages
-  socket.on('message', (msg) => {
-    const partner = activePairs.get(socket.id);
-    if (partner) {
-      partner.emit('message', msg);
-    }
-  });
-
-  // Handle "next" button click
+  // Handle "next" event (stranger matching)
   socket.on('next', () => {
-    disconnectPair(socket);
-
-    // Put back in queue
-    const index = waitingUsers.indexOf(socket);
-    if (index === -1) waitingUsers.push(socket);
-
-    if (waitingUsers.length >= 2) {
-      const [s1, s2] = [waitingUsers.shift(), waitingUsers.shift()];
-      pairUsers(s1, s2);
+    // Find the first available user that is not already paired
+    let availableUser = Object.keys(users).find((key) => users[key] === null && key !== socket.id);
+    
+    if (availableUser) {
+      users[socket.id] = availableUser;
+      users[availableUser] = socket.id;
+      socket.emit('stranger', { id: availableUser });
+      io.to(availableUser).emit('stranger', { id: socket.id });
+    } else {
+      socket.emit('stranger', { message: "No one available for chat right now!" });
     }
   });
 
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    disconnectPair(socket);
+  // Handle chat messages between users
+  socket.on('chat message', (data) => {
+    let recipient = io.sockets.sockets.get(data.id);  // Find the other user
+    if (recipient) {
+      recipient.emit('chat message', data.message);
+    }
+  });
 
-    // Remove from waiting queue
-    waitingUsers = waitingUsers.filter((s) => s.id !== socket.id);
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    // Disconnecting user, reset their pair and notify the other user
+    if (users[socket.id]) {
+      let pairedUser = users[socket.id];
+      io.to(pairedUser).emit('stranger', { message: 'Your partner has disconnected.' });
+      users[pairedUser] = null;  // Reset paired user
+    }
+    delete users[socket.id];
+    console.log('User disconnected');
   });
 });
 
-const PORT = process.env.PORT || 10000;
+// Set up a basic health check route
+app.get('/healthz', (req, res) => {
+  res.send('OK');
+});
+
+const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server is running on port ${PORT}`);
 });
