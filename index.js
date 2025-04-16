@@ -1,63 +1,58 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-
+const express = require("express");
+const socketIo = require("socket.io");
+const http = require("http");
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
+const io = socketIo(server);
+
+let waitingUser = null;
+let activeUsers = [];
+
+app.get("/healthz", (req, res) => {
+  res.status(200).send("OK");
+});
+
+io.on("connection", (socket) => {
+  console.log(`User connected: ${socket.id}`);
+
+  // Match users
+  if (waitingUser) {
+    socket.emit("match", waitingUser);
+    io.to(waitingUser).emit("match", socket.id);
+    waitingUser = null;
+  } else {
+    waitingUser = socket.id;
   }
-});
 
-let users = {}; // Active users
-
-io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
-  users[socket.id] = null;
-
-  socket.on('next', () => {
-    let availableUser = Object.keys(users).find(
-      (key) => users[key] === null && key !== socket.id
-    );
-
-    if (availableUser) {
-      users[socket.id] = availableUser;
-      users[availableUser] = socket.id;
-      socket.emit('stranger', { id: availableUser });
-      io.to(availableUser).emit('stranger', { id: socket.id });
+  // Disconnect event
+  socket.on("disconnect", () => {
+    console.log(`User disconnected: ${socket.id}`);
+    if (waitingUser === socket.id) {
+      waitingUser = null; // Reset waiting user if they disconnect
     } else {
-      socket.emit('stranger', { message: 'No one available for chat right now!' });
+      const index = activeUsers.indexOf(socket.id);
+      if (index !== -1) {
+        activeUsers.splice(index, 1);
+      }
     }
   });
 
-  socket.on('chat message', (data) => {
-    let recipient = io.sockets.sockets.get(data.id);
-    if (recipient) {
-      recipient.emit('chat message', data.message);
-    }
+  // Chat messages
+  socket.on("chat message", (msg) => {
+    io.emit("chat message", msg);
   });
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    if (users[socket.id]) {
-      let partner = users[socket.id];
-      io.to(partner).emit('stranger', { message: 'Your partner has disconnected.' });
-      users[partner] = null;
+  // Next button (disconnect and connect to another stranger)
+  socket.on("next", () => {
+    if (waitingUser === socket.id) {
+      waitingUser = null;
     }
-    delete users[socket.id];
+    socket.disconnect();
   });
 });
 
-app.get('/healthz', (req, res) => {
-  res.send('OK');
+// Server running
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
-
-
-
-const PORT = process.env.PORT || 5000;  // Use dynamic port if set by Render, else fallback to 5000
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
-
