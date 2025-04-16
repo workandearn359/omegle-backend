@@ -1,11 +1,8 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
 
 const app = express();
-app.use(cors());
-
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -14,79 +11,73 @@ const io = new Server(server, {
   }
 });
 
-// Keep a queue of unmatched users
 let waitingUsers = [];
+let activePairs = new Map(); // key = socket.id, value = partner's socket
 
-const pairs = new Map(); // socket.id -> partner socket
+// Matchmaking function
+function pairUsers(socket1, socket2) {
+  activePairs.set(socket1.id, socket2);
+  activePairs.set(socket2.id, socket1);
 
+  socket1.emit('stranger-connected');
+  socket2.emit('stranger-connected');
+}
+
+// Disconnect both users in a pair
+function disconnectPair(socket) {
+  const partner = activePairs.get(socket.id);
+  if (partner) {
+    partner.emit('partner-disconnected');
+    activePairs.delete(partner.id);
+  }
+  activePairs.delete(socket.id);
+}
+
+// Handle new connections
 io.on('connection', (socket) => {
-  console.log('New user connected:', socket.id);
+  console.log(`User connected: ${socket.id}`);
 
-  // Try to pair the user
+  // Try to pair user
   if (waitingUsers.length > 0) {
-    const partner = waitingUsers.pop();
-
-    // Save pairing both sides
-    pairs.set(socket.id, partner);
-    pairs.set(partner.id, socket);
-
-    // Notify both users
-    socket.emit('stranger-connected');
-    partner.emit('stranger-connected');
+    const partner = waitingUsers.shift();
+    pairUsers(socket, partner);
   } else {
     waitingUsers.push(socket);
   }
 
-  // Handle incoming message
+  // Handle messages
   socket.on('message', (msg) => {
-    const partner = pairs.get(socket.id);
+    const partner = activePairs.get(socket.id);
     if (partner) {
       partner.emit('message', msg);
     }
   });
 
-  // Handle "next" button
+  // Handle "next" button click
   socket.on('next', () => {
-    const partner = pairs.get(socket.id);
+    disconnectPair(socket);
 
-    if (partner) {
-      partner.emit('stranger-disconnected');
-      pairs.delete(partner.id);
-      waitingUsers.push(partner);
-    }
+    // Put back in queue
+    const index = waitingUsers.indexOf(socket);
+    if (index === -1) waitingUsers.push(socket);
 
-    pairs.delete(socket.id);
-
-    if (waitingUsers.length > 0) {
-      const newPartner = waitingUsers.pop();
-      pairs.set(socket.id, newPartner);
-      pairs.set(newPartner.id, socket);
-      socket.emit('stranger-connected');
-      newPartner.emit('stranger-connected');
-    } else {
-      waitingUsers.push(socket);
+    if (waitingUsers.length >= 2) {
+      const [s1, s2] = [waitingUsers.shift(), waitingUsers.shift()];
+      pairUsers(s1, s2);
     }
   });
 
   // Handle disconnect
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    console.log(`User disconnected: ${socket.id}`);
+    disconnectPair(socket);
 
     // Remove from waiting queue
     waitingUsers = waitingUsers.filter((s) => s.id !== socket.id);
-
-    const partner = pairs.get(socket.id);
-    if (partner) {
-      partner.emit('stranger-disconnected');
-      waitingUsers.push(partner);
-      pairs.delete(partner.id);
-    }
-
-    pairs.delete(socket.id);
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
