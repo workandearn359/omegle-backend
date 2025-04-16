@@ -19,6 +19,8 @@ io.on("connection", (socket) => {
   if (waitingUser) {
     socket.emit("match", waitingUser);
     io.to(waitingUser).emit("match", socket.id);
+    activeUsers.push(socket.id);
+    activeUsers.push(waitingUser);
     waitingUser = null;
   } else {
     waitingUser = socket.id;
@@ -37,22 +39,28 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Chat messages
+  // Chat messages (only send to matched users)
   socket.on("chat message", (msg) => {
-    io.emit("chat message", msg);
+    // Find the other matched user
+    const otherUser = activeUsers.find(user => user !== socket.id);
+    if (otherUser) {
+      io.to(otherUser).emit("chat message", msg);
+    }
   });
 
   // Next button (disconnect and connect to another stranger)
   socket.on("next", () => {
-    if (waitingUser === socket.id) {
-      waitingUser = null;
+    const otherUser = activeUsers.find(user => user !== socket.id);
+    if (otherUser) {
+      io.to(otherUser).emit("disconnect");
     }
+    // Disconnect the current user
     socket.disconnect();
   });
 });
 
 // Server running
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const port = process.env.PORT || 3000;
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
